@@ -4,22 +4,30 @@ description: Toggle lid-close sleep prevention on this Mac. Use when the user ru
 allowed-tools: Bash
 ---
 
-Run the bash block below via `bash -s -- <arg>`, passing the user's `$ARGUMENTS` as `<arg>`.
+Run the bash block under `## Script` via `bash -s -- <arg>`, passing the user's `$ARGUMENTS` as `<arg>`. Substitute the entire script body — do not pass the literal placeholder.
 
 The user's argument will be one of: `on`, `off`, `status`, or empty.
 - Empty → pass `status`.
 - Anything else → pass through; the script prints a usage error.
 
-Invocation pattern (use a heredoc so the script is fed on stdin):
+Invocation pattern (heredoc, single-quoted delimiter so `$` isn't expanded):
 
 ```
 bash -s -- <arg> <<'BASH'
-<the script body below>
+# ... entire ## Script body ...
 BASH
 ```
 
 Notes:
-- `on` requires sudo (the script uses `sudo pmset -a SleepDisabled 1`). The Bash tool will prompt for the password the first time.
+- `on` and `off` need root for `pmset -a SleepDisabled`. The script uses `sudo -n` (non-interactive) and will fail fast if no cached credentials. Two ways to make this work from the Bash tool:
+  - **Per-session:** the user types `! sudo -v` in the prompt to cache credentials for ~5 minutes, then re-runs the command.
+  - **Permanent:** the user adds a sudoers drop-in:
+    ```
+    sudo visudo -f /etc/sudoers.d/lid-proof
+    # then add:
+    YOUR_USERNAME ALL=(root) NOPASSWD: /usr/bin/pmset -a SleepDisabled *
+    ```
+  If `on` returns a sudo error, surface it and offer those two options — don't retry blindly.
 - `on` starts `caffeinate -dimsu` as a detached background process and records its PID in `~/.cache/lid-proof/caffeinate.pid`. It also saves the previous `SleepDisabled` value so `off` can restore it.
 - `off` kills the caffeinate process and restores `SleepDisabled` to its prior value.
 - After executing, just relay what the script printed.
@@ -40,7 +48,9 @@ ORIG_FILE="${STATE_DIR}/sleep_disabled.orig"
 mkdir -p "$STATE_DIR"
 
 current_sleep_disabled() {
-  pmset -g | awk '/SleepDisabled/ {print $2; exit}'
+  local v
+  v=$(pmset -g | awk '/SleepDisabled/ {print $2; exit}')
+  echo "${v:-0}"
 }
 
 is_running() {
@@ -56,10 +66,9 @@ case "$cmd" in
       exit 0
     fi
     orig=$(current_sleep_disabled)
-    orig=${orig:-0}
     echo "$orig" > "$ORIG_FILE"
-    sudo pmset -a SleepDisabled 1 >/dev/null
-    nohup caffeinate -dimsu >/dev/null 2>&1 &
+    sudo -n pmset -a SleepDisabled 1 >/dev/null
+    nohup caffeinate -dimsu >/dev/null 2>&1 </dev/null &
     echo $! > "$PID_FILE"
     disown || true
     echo "lid-proof ON. close the lid freely. SleepDisabled was $orig."
@@ -72,7 +81,7 @@ case "$cmd" in
     rm -f "$PID_FILE"
     orig=0
     [[ -f "$ORIG_FILE" ]] && orig=$(cat "$ORIG_FILE")
-    sudo pmset -a SleepDisabled "$orig" >/dev/null
+    sudo -n pmset -a SleepDisabled "$orig" >/dev/null
     rm -f "$ORIG_FILE"
     echo "lid-proof OFF. SleepDisabled restored to $orig."
     ;;
