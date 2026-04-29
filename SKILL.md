@@ -58,10 +58,10 @@ preflight_sudo() {
   cat >&2 <<EOF
 lid-proof: passwordless sudo for pmset is not configured.
 
-Claude Code's Bash tool has no TTY, so sudo can't prompt. To enable on/off,
+Your current AI Agent's bash tool has no TTY, so sudo can't prompt. To enable on/off,
 add a one-line sudoers rule (one-time setup):
 
-  1. Open a regular terminal (Terminal.app or iTerm — outside Claude Code).
+  1. Open a regular terminal (Terminal.app or iTerm — outside your AI Agent).
   2. Run:
        sudo visudo -f /etc/sudoers.d/lid-proof
   3. Paste this single line:
