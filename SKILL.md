@@ -19,15 +19,8 @@ BASH
 ```
 
 Notes:
-- `on` and `off` need root for `pmset -a SleepDisabled`. The script uses `sudo -n` (non-interactive) and will fail fast if no cached credentials. Two ways to make this work from the Bash tool:
-  - **Per-session:** the user types `! sudo -v` in the prompt to cache credentials for ~5 minutes, then re-runs the command.
-  - **Permanent:** the user adds a sudoers drop-in:
-    ```
-    sudo visudo -f /etc/sudoers.d/lid-proof
-    # then add:
-    YOUR_USERNAME ALL=(root) NOPASSWD: /usr/bin/pmset -a SleepDisabled *
-    ```
-  If `on` returns a sudo error, surface it and offer those two options — don't retry blindly.
+- `on` and `off` need root for `pmset -a SleepDisabled`. The script preflights this with `sudo -n -l` and, if NOPASSWD isn't set up, prints exact setup steps and exits without changing anything. Just relay those instructions to the user — don't try to run sudo, don't loop, don't suggest workarounds.
+- `status` works without sudo and never triggers the preflight.
 - `on` starts `caffeinate -dimsu` as a detached background process and records its PID in `~/.cache/lid-proof/caffeinate.pid`. It also saves the previous `SleepDisabled` value so `off` can restore it.
 - `off` kills the caffeinate process and restores `SleepDisabled` to its prior value.
 - After executing, just relay what the script printed.
@@ -57,10 +50,35 @@ is_running() {
   [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
 }
 
+preflight_sudo() {
+  # NOPASSWD entry must allow `pmset -a SleepDisabled <value>` non-interactively.
+  if sudo -n -l /usr/bin/pmset -a SleepDisabled 1 >/dev/null 2>&1; then
+    return 0
+  fi
+  cat >&2 <<EOF
+lid-proof: passwordless sudo for pmset is not configured.
+
+Claude Code's Bash tool has no TTY, so sudo can't prompt. To enable on/off,
+add a one-line sudoers rule (one-time setup):
+
+  1. Open a regular terminal (Terminal.app or iTerm — outside Claude Code).
+  2. Run:
+       sudo visudo -f /etc/sudoers.d/lid-proof
+  3. Paste this single line:
+       ${USER} ALL=(root) NOPASSWD: /usr/bin/pmset -a SleepDisabled *
+  4. Save and exit.
+
+Then re-run /lid-proof on (or off) — it will work silently from then on.
+The rule is scoped strictly to 'pmset -a SleepDisabled', nothing else.
+EOF
+  return 1
+}
+
 cmd="${1:-status}"
 
 case "$cmd" in
   on)
+    preflight_sudo
     if is_running; then
       echo "lid-proof already ON (caffeinate pid $(cat "$PID_FILE"))"
       exit 0
@@ -75,6 +93,7 @@ case "$cmd" in
     echo "heads-up: with the lid closed and no external cooling, the machine can run hot since it's running at full tilt under the closed lid — fine for short stints, worth watching for long ones."
     ;;
   off)
+    preflight_sudo
     if is_running; then
       kill "$(cat "$PID_FILE")" 2>/dev/null || true
     fi
