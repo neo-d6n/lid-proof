@@ -19,40 +19,30 @@ BASH
 ```
 
 Notes:
-- `on` and `off` need root for `pmset -a SleepDisabled`. The script preflights this with `sudo -n -l` and, if NOPASSWD isn't set up, prints exact setup steps and exits without changing anything. Just relay those instructions to the user — don't try to run sudo, don't loop, don't suggest workarounds.
-- `status` works without sudo and never triggers the preflight.
-- `on` starts `caffeinate -dimsu` as a detached background process and records its PID in `~/.cache/lid-proof/caffeinate.pid`. It also saves the previous `SleepDisabled` value so `off` can restore it.
-- `off` kills the caffeinate process and restores `SleepDisabled` to its prior value.
+- The skill toggles `pmset -a disablesleep`, the modern macOS knob (Sequoia+) that prevents the system from sleeping at all, including on lid-close. The older `SleepDisabled` key was removed.
+- `on` and `off` need root for `pmset`. The script preflights this with `sudo -n -l` and, if NOPASSWD isn't set up for `pmset -a disablesleep`, prints exact setup steps and exits without changing anything. Just relay those instructions to the user — don't try to run sudo, don't loop, don't suggest workarounds.
+- `status` works without sudo and reads a local state flag (`~/.cache/lid-proof/active`); it never triggers the preflight.
 - After executing, just relay what the script printed.
 
 ## Script
 
 ```bash
 #!/usr/bin/env bash
-# lid-proof: keep mac awake with lid closed.
+# lid-proof: keep mac awake with lid closed via pmset disablesleep.
 #   lid-proof on      enable
-#   lid-proof off     disable + restore
+#   lid-proof off     disable
 #   lid-proof status  show state
 set -euo pipefail
 
 STATE_DIR="${HOME}/.cache/lid-proof"
-PID_FILE="${STATE_DIR}/caffeinate.pid"
-ORIG_FILE="${STATE_DIR}/sleep_disabled.orig"
+STATE_FILE="${STATE_DIR}/active"
 mkdir -p "$STATE_DIR"
 
-current_sleep_disabled() {
-  local v
-  v=$(pmset -g | awk '/SleepDisabled/ {print $2; exit}')
-  echo "${v:-0}"
-}
-
-is_running() {
-  [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
-}
+is_active() { [[ -f "$STATE_FILE" ]]; }
 
 preflight_sudo() {
-  # NOPASSWD entry must allow `pmset -a SleepDisabled <value>` non-interactively.
-  if sudo -n -l /usr/bin/pmset -a SleepDisabled 1 >/dev/null 2>&1; then
+  # NOPASSWD entry must allow `pmset -a disablesleep <value>` non-interactively.
+  if sudo -n -l /usr/bin/pmset -a disablesleep 1 >/dev/null 2>&1; then
     return 0
   fi
   cat >&2 <<EOF
@@ -65,11 +55,11 @@ add a one-line sudoers rule (one-time setup):
   2. Run:
        sudo visudo -f /etc/sudoers.d/lid-proof
   3. Paste this single line:
-       ${USER} ALL=(root) NOPASSWD: /usr/bin/pmset -a SleepDisabled *
+       ${USER} ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep *
   4. Save and exit.
 
 Then re-run /lid-proof on (or off) — it will work silently from then on.
-The rule is scoped strictly to 'pmset -a SleepDisabled', nothing else.
+The rule is scoped strictly to 'pmset -a disablesleep', nothing else.
 EOF
   return 1
 }
@@ -79,37 +69,26 @@ cmd="${1:-status}"
 case "$cmd" in
   on)
     preflight_sudo
-    if is_running; then
-      echo "lid-proof already ON (caffeinate pid $(cat "$PID_FILE"))"
+    if is_active; then
+      echo "lid-proof already ON."
       exit 0
     fi
-    orig=$(current_sleep_disabled)
-    echo "$orig" > "$ORIG_FILE"
-    sudo -n pmset -a SleepDisabled 1 >/dev/null
-    nohup caffeinate -dimsu >/dev/null 2>&1 </dev/null &
-    echo $! > "$PID_FILE"
-    disown || true
-    echo "lid-proof ON. close the lid freely. SleepDisabled was $orig."
+    sudo -n pmset -a disablesleep 1 >/dev/null
+    : > "$STATE_FILE"
+    echo "lid-proof ON. close the lid freely; the Mac will not sleep."
     echo "heads-up: with the lid closed and no external cooling, the machine can run hot since it's running at full tilt under the closed lid — fine for short stints, worth watching for long ones."
     ;;
   off)
     preflight_sudo
-    if is_running; then
-      kill "$(cat "$PID_FILE")" 2>/dev/null || true
-    fi
-    rm -f "$PID_FILE"
-    orig=0
-    [[ -f "$ORIG_FILE" ]] && orig=$(cat "$ORIG_FILE")
-    sudo -n pmset -a SleepDisabled "$orig" >/dev/null
-    rm -f "$ORIG_FILE"
-    echo "lid-proof OFF. SleepDisabled restored to $orig."
+    sudo -n pmset -a disablesleep 0 >/dev/null
+    rm -f "$STATE_FILE"
+    echo "lid-proof OFF. normal sleep behavior restored."
     ;;
   status)
-    sd=$(current_sleep_disabled)
-    if is_running; then
-      echo "lid-proof: ON  (caffeinate pid $(cat "$PID_FILE"), SleepDisabled=$sd)"
+    if is_active; then
+      echo "lid-proof: ON"
     else
-      echo "lid-proof: OFF (SleepDisabled=$sd)"
+      echo "lid-proof: OFF"
     fi
     ;;
   *)
